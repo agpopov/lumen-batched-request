@@ -1,0 +1,5 @@
+{
+    "A relative URL was not provided for the request at index :index.": "Не указан относительный путь запроса для индекса :index.",
+    "The request to ':relativeUrl' is dependant on the request ':dependency', but is not present in the batch.": "Запрос к ':relativeUrl' зависит от запроса ':dependency', но не присутствует в пакете.",
+    "The request to ':relativeUrl' could not be completed because its dependant request ':dependency' failed.": "Запрос к ':relativeUrl' не может быть выполнен, так как зависящий от него запрос ':dependency' не выполнен."
+}

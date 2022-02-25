@@ -4,9 +4,8 @@ namespace Dvanderburg\BatchedRequest;
 
 use Flow\JSONPath\JSONPath;
 use Flow\JSONPath\JSONPathException;
-use Illuminate\Http\Request;
+use Laravel\Lumen\Http\Request;
 use JetBrains\PhpStorm\ArrayShape;
-use Symfony\Component\HttpFoundation\Request as SymfonyRequest;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
@@ -19,12 +18,8 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
  */
 class BatchedRequest
 {
-
-    // array describing the request to create for the batch
-    private array $batch = [];
-
     // the original request initiating the batch
-    private ?Request $request = null;
+    private ?\Illuminate\Http\Request $request;
 
     // array of responses from the batch (http status code, response body)
     private array $responses = [];
@@ -35,22 +30,22 @@ class BatchedRequest
      *                                                relative_url => The endpoint (/user/1234, /item/2345, etc.)
      *                                                method => HTTP method (post, get, options, etc.)
      *                                                name => A name to give the request if using dependencies
-     * @param  Request|null  $request  The original request initiating the batch, used to share headers, files, cookies, etc.
+     * @param  \Illuminate\Http\Request|null  $request  The original request initiating the batch, used to share headers, files, cookies, etc.
      */
-    public function __construct(array $batch, Request $request = null)
+    public function __construct(private array $batch = [], ?\Illuminate\Http\Request $request = null)
     {
-        $this->batch = $batch;
         $this->request = is_null($request) ? Request::capture() : $request;
     }
 
     /**
      * Executes the batch of requests
+     * @throws JSONPathException
      */
     public function execute(): void
     {
         foreach ($this->batch as $index => $batchedRequest) {
             if (!isset($batchedRequest['relative_url'])) {
-                throw new HttpException(400, "A relative URL was not provided for the request at index ".$index.".");
+                throw new HttpException(400, __("A relative URL was not provided for the request at index :index.", ['index' => $index]));
             }
 
             $requestName = !empty($batchedRequest['name']) ? $batchedRequest['name'] : count($this->responses);
@@ -85,7 +80,7 @@ class BatchedRequest
         $method = $batchedRequest['method'] ?? "GET";
         $parameters = $this->getParameters($batchedRequest);
 
-        $subRequest = SymfonyRequest::create(
+        $subRequest = Request::create(
             $batchedRequest['relative_url'],
             $method,
             $parameters,
@@ -98,7 +93,7 @@ class BatchedRequest
 
         $subRequestResponse = app()->handle($subRequest);
 
-        $response = array();
+        $response = [];
         $response['code'] = $subRequestResponse->getStatusCode();
         $response['body'] = $subRequestResponse->getContent();
 
@@ -113,7 +108,7 @@ class BatchedRequest
     /**
      * @throws JSONPathException
      */
-    private function parseURLTokens(&$batchedRequest): void
+    private function parseURLTokens(array &$batchedRequest): void
     {
         // retrieve any tokens in the relative URL
         $urlTokens = $this->getRelativeURLTokens($batchedRequest['relative_url']);
@@ -123,7 +118,8 @@ class BatchedRequest
             // ensure the dependency request exists
             if (!isset($this->responses[$urlToken['dependency']])) {
                 throw new HttpException(400,
-                    "The request to '".$batchedRequest['relative_url']."' is dependant on the request '".$urlToken['dependency']."', but is not present in the batch.");
+                    __("The request to ':relativeUrl' is dependant on the request ':dependency', but is not present in the batch.",
+                        ['relativeUrl' => $batchedRequest['relative_url'], 'dependency' => $urlToken['dependency']]));
             }
 
             // load the dependency's response
@@ -132,7 +128,8 @@ class BatchedRequest
             // ensure the dependency request was successful
             if ($dependencyResponse['code'] !== 200) {
                 throw new HttpException(400,
-                    "The request to '".$batchedRequest['relative_url']."' could not be completed because its dependant request '".$urlToken['dependency']."' failed.");
+                    __("The request to ':relativeUrl' could not be completed because its dependant request ':dependency' failed.",
+                        ['relativeUrl' => $batchedRequest['relative_url'], 'dependency' => $urlToken['dependency']]));
             }
 
             $jsonPath = new JSONPath($dependencyResponse['body']);
@@ -145,7 +142,7 @@ class BatchedRequest
 
     private function getParameters($batchedRequest): array
     {
-        $parameters = array();
+        $parameters = [];
 
         $parameters = array_merge($parameters, $this->getPayloadParameters($batchedRequest));
         return array_merge($parameters, $this->getQueryParameters($batchedRequest));
@@ -153,11 +150,11 @@ class BatchedRequest
 
     private function getQueryParameters($batchedRequest): array
     {
-        $parameters = array();
+        $parameters = [];
 
         // divide the relative url into sections within an array
         //	the first element will be the resource, the second the query string
-        $urlSections = explode('?', $batchedRequest['relative_url']);
+        $urlSections = explode('?', $batchedRequest['relative_url'], 2);
 
         // check if a valid, non-empty query string was sent
         if (count($urlSections) == 2 && !empty($urlSections[1])) {
@@ -179,7 +176,7 @@ class BatchedRequest
 
     private function getPayloadParameters($batchedRequest): array
     {
-        $parameters = array();
+        $parameters = [];
 
         if (isset($batchedRequest["body"]) && isset($batchedRequest["content-type"])) {
             // Check the content-type and see how it should be parsed
@@ -203,11 +200,11 @@ class BatchedRequest
         return $parameters;
     }
 
-    private function getRelativeURLTokens($relativeURL): array
+    private function getRelativeURLTokens(string $relativeURL): array
     {
         // array to return all tokens with
         //	populated by parsing the relative URL for tokens and then formatted with this.getTokenDataFromTokenString
-        $tokens = array();
+        $tokens = [];
 
         // loop until all tokens have been parsed
         //	tokens are contained within braces, look for an opening brace to identify a token
@@ -236,8 +233,13 @@ class BatchedRequest
         return $tokens;
     }
 
-    #[ArrayShape(['url_token' => "", 'type' => "string", 'dependency' => "string", 'json_path' => "string"])]
-    private function getTokenDataFromTokenString($urlToken): array
+    #[ArrayShape([
+        'url_token' => "string",
+        'type' => "string",
+        'dependency' => "string",
+        'json_path' => "string"
+    ])]
+    private function getTokenDataFromTokenString(string $urlToken): array
     {
         // remove the braces from the token (remove first and last character)
         $tokenBody = substr($urlToken, 1, strlen($urlToken) - 2);
